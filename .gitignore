@@ -55,6 +55,7 @@ ENV/
 
 # Çıktılar (Ousia özel)
 output/
+samples/
 
 # macOS
 .DS_Store

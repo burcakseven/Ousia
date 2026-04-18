@@ -1,0 +1,22 @@
+# Ousia — core dependencies
+
+# Graph engine
+numpy
+
+# Vocal analysis
+opensmile
+
+# LLM extraction (OpenAI-compatible API)
+openai
+
+# Transcription (faster-whisper preferred; openai-whisper fallback)
+faster-whisper
+
+# Visualization (visualizer.py)
+networkx
+matplotlib
+
+# Optional — graceful fallback if not installed:
+# sentence-transformers  # enables ConceptMerger node deduplication
+# sounddevice            # enables mic_stream() live recording
+# python-dotenv          # loads .env for API keys (code handles absence)

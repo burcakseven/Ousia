@@ -138,7 +138,9 @@ class ConceptMerger:
 class Edge:
     weight: float = 0.0
     activation_count: int = 0
-    dissonance: float = 0.0  # 0.0–1.0, max text/voice conflict observed
+    dissonance: float = 0.0       # 0.0–1.0, max text/voice conflict
+    consonance: float = 0.0       # 0.0–1.0, max text/voice alignment
+    emotional_intensity: float = 0.0  # 0.0–1.0, max avg energy observed
 
     def hebbian_update(self, vocal_salience: float, learning_rate: float):
         """Hebbian: neurons that fire together, wire together."""
@@ -156,9 +158,17 @@ class Edge:
         # Clamp to [0, 1]
         self.weight = max(0.0, min(self.weight, 1.0))
 
-    def record_dissonance(self, dissonance_score: float):
-        """Store max dissonance observed for this edge (text vs voice conflict)."""
-        self.dissonance = max(self.dissonance, dissonance_score)
+    def record_dissonance(self, score: float):
+        """Store max dissonance (conflict) observed for this edge."""
+        self.dissonance = max(self.dissonance, score)
+
+    def record_consonance(self, score: float):
+        """Store max consonance (alignment) observed for this edge."""
+        self.consonance = max(self.consonance, score)
+
+    def record_intensity(self, score: float):
+        """Store max emotional intensity observed for this edge."""
+        self.emotional_intensity = max(self.emotional_intensity, score)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize edge to JSON-compatible dict."""
@@ -166,6 +176,8 @@ class Edge:
             "weight": self.weight,
             "activation_count": self.activation_count,
             "dissonance": self.dissonance,
+            "consonance": self.consonance,
+            "emotional_intensity": self.emotional_intensity,
         }
 
     @classmethod
@@ -175,6 +187,8 @@ class Edge:
             weight=float(d.get("weight", 0.0)),
             activation_count=int(d.get("activation_count", 0)),
             dissonance=float(d.get("dissonance", 0.0)),
+            consonance=float(d.get("consonance", 0.0)),
+            emotional_intensity=float(d.get("emotional_intensity", 0.0)),
         )
 
 
@@ -252,6 +266,20 @@ class PatientGraph:
         edge.hebbian_update(dissonance_score, self.LEARNING_RATE)
         edge.record_dissonance(dissonance_score)
 
+    def record_consonance(self, concept_a: str, concept_b: str, consonance_score: float, intensity: float):
+        """
+        Record text/voice alignment (consonance) for an edge.
+        """
+        if concept_a == concept_b:
+            return
+        concept_a = self.add_node(concept_a)
+        concept_b = self.add_node(concept_b)
+        edge = self._get_edge(concept_a, concept_b)
+        # Consonance also triggers Hebbian (authentic alignment = significance)
+        edge.hebbian_update(consonance_score, self.LEARNING_RATE)
+        edge.record_consonance(consonance_score)
+        edge.record_intensity(intensity)
+
     def record_avoidance(self, concept: str, avoidance_score: float):
         """
         Record avoidance signal for a concept.
@@ -315,7 +343,7 @@ class PatientGraph:
         return {
             "nodes": sorted(self.nodes),
             "edges": [
-                [list(k), e.weight, e.activation_count, e.dissonance]
+                [list(k), e.weight, e.activation_count, e.dissonance, e.consonance, e.emotional_intensity]
                 for k, e in self.edges.items()
             ],
             "hyperparams": {
@@ -338,12 +366,14 @@ class PatientGraph:
         g.nodes = set(d.get("nodes", []))
 
         for entry in d.get("edges", []):
-            nodes_list, weight, activation_count, dissonance = entry
+            nodes_list, weight, activation_count, dissonance, consonance, intensity = entry
             key = frozenset(nodes_list)
             e = Edge.from_dict({
                 "weight": weight,
                 "activation_count": activation_count,
                 "dissonance": dissonance,
+                "consonance": consonance,
+                "emotional_intensity": intensity,
             })
             g.edges[key] = e
 

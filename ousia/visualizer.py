@@ -38,7 +38,7 @@ class OusiaVisualizer:
       - Düğüm boyutu   → activation_count (ne kadar sık aktive olduysa o kadar büyük)
       - Düğüm rengi    → açık mavi (normal) | koyu gri (silence düğümü)
       - Kenar kalınlığı → weight (bağ gücü)
-      - Kenar rengi    → dissonance ≤ 0.3: mavi-gri | > 0.6: kırmızı gradient
+      - Kenar rengi    → Consonance (Yeşil) vs Dissonance (Kırmızı) dengesi
       - Kenar stili    → silence kenarları: kesik çizgi (dashed)
     """
 
@@ -81,6 +81,8 @@ class OusiaVisualizer:
                 weight=edge.weight,
                 activation_count=edge.activation_count,
                 dissonance=edge.dissonance,
+                consonance=edge.consonance,
+                intensity=edge.emotional_intensity,
                 is_silence=is_silence,
             )
 
@@ -97,11 +99,19 @@ class OusiaVisualizer:
         return counts
 
     @staticmethod
-    def _dissonance_color(d: float) -> str:
-        """Dissonance skoruna göre renk üretir: düşük=çelik mavisi, yüksek=kırmızı."""
-        # 0.0 → steel blue  |  1.0 → crimson
-        cmap = matplotlib.colormaps["RdYlBu_r"]
-        rgba = cmap(float(np.clip(d, 0.0, 1.0)))
+    def _edge_color(d: float, c: float) -> str:
+        """Dissonance (red) vs Consonance (green) balancing."""
+        if d > c and d > 0.3:
+            # Shift towards red
+            cmap = matplotlib.colormaps["YlOrRd"]
+            rgba = cmap(float(np.clip(d, 0.0, 1.0)))
+        elif c >= d and c > 0.3:
+            # Shift towards green
+            cmap = matplotlib.colormaps["YlGn"]
+            rgba = cmap(float(np.clip(c, 0.0, 1.0)))
+        else:
+            # Neutral / low intensity
+            return "#666688"
         return mcolors.to_hex(rgba)
 
     # ── Ana render ────────────────────────────────────────────────────────────
@@ -145,6 +155,7 @@ class OusiaVisualizer:
         for u, v, data in G.edges(data=True):
             w  = data.get("weight", 0.0)
             d  = data.get("dissonance", 0.0)
+            c  = data.get("consonance", 0.0)
             is_sil = data.get("is_silence", False)
             width = max(0.5, w * self.EDGE_WIDTH_SCALE)
 
@@ -154,7 +165,7 @@ class OusiaVisualizer:
             else:
                 normal_edges.append((u, v))
                 normal_widths.append(width)
-                normal_colors.append(self._dissonance_color(d))
+                normal_colors.append(self._edge_color(d, c))
 
         # ── Figür ────────────────────────────────────────────────────────────
         fig, ax = plt.subplots(figsize=self.FIG_SIZE, dpi=self.DPI)
@@ -232,16 +243,20 @@ class OusiaVisualizer:
         )
         ax.axis("off")
 
-        # Renk skalası (dissonance)
-        sm = plt.cm.ScalarMappable(
-            cmap=matplotlib.colormaps["RdYlBu_r"],
-            norm=mcolors.Normalize(vmin=0, vmax=1),
-        )
-        sm.set_array([])
-        cbar = fig.colorbar(sm, ax=ax, fraction=0.025, pad=0.02, shrink=0.6)
-        cbar.set_label("Dissonans (ses ≠ söz)", color="#cccccc", fontsize=8)
-        cbar.ax.yaxis.set_tick_params(color="#cccccc", labelcolor="#cccccc")
-        cbar.outline.set_edgecolor("#555577")
+        # Skalalar
+        # Dissonance Scale (Red)
+        sm_d = plt.cm.ScalarMappable(cmap=matplotlib.colormaps["YlOrRd"], norm=mcolors.Normalize(vmin=0, vmax=1))
+        sm_d.set_array([])
+        cbar_d = fig.colorbar(sm_d, ax=ax, fraction=0.02, pad=0.02, shrink=0.5)
+        cbar_d.set_label("Çelişki (Dissonance)", color="#ffaaaa", fontsize=8)
+        cbar_d.ax.yaxis.set_tick_params(color="#cccccc", labelcolor="#cccccc")
+
+        # Consonance Scale (Green)
+        sm_c = plt.cm.ScalarMappable(cmap=matplotlib.colormaps["YlGn"], norm=mcolors.Normalize(vmin=0, vmax=1))
+        sm_c.set_array([])
+        cbar_c = fig.colorbar(sm_c, ax=ax, fraction=0.02, pad=0.05, shrink=0.5)
+        cbar_c.set_label("Uyum (Consonance)", color="#aaffaa", fontsize=8)
+        cbar_c.ax.yaxis.set_tick_params(color="#cccccc", labelcolor="#cccccc")
 
         # Küçük legend
         from matplotlib.lines import Line2D

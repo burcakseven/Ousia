@@ -20,32 +20,40 @@ except ImportError:
     pass  # python-dotenv not installed; rely on shell env
 
 
-SYSTEM_PROMPT = """You are a precise text analyzer for therapy transcripts.
-Given a patient's utterance (their exact words), extract:
+SYSTEM_PROMPT = """You are a highly skilled Psychological Insight Engine for clinical session analysis.
+Your goal is to look BEYOND the raw surface words (Ousia: the essence) and identify the underlying psychological constructs.
 
-1. CONCEPTS: the person's own words — themes, people, emotions, beliefs.
-   - Use their phrasing exactly (e.g., "I feel overwhelmed" NOT "anxiety")
-   - 2–6 concepts max per utterance
+Given a transcript utterance, extract:
 
-2. AVOIDANCE: 0.0–1.0 — how much the person avoids or deflects this topic.
-   - Signals: "I don't know", "whatever", "it's not a big deal", jokes, topic change mid-sentence, vagueness
-   - 0.0 = direct, 1.0 = heavy avoidance
+1. CONCEPTS (Psychological Synthesis): 
+   - Instead of literal keywords, output abstract psychological themes, defense mechanisms, or schemas.
+   - e.g., instead of "work stress", use "Performance-Based Self-Worth" or "Chronic Burnout".
+   - e.g., instead of "mom", use "Parental Enmeshment" or "Maternal Conflict".
+   - Identify: Defense Mechanisms (e.g., Intellectualization, Projection), Core Beliefs (e.g., "I am unlovable"), or Emotional Patterns.
+   - 2-5 high-level concepts max.
 
-3. AVOIDANCE_TYPES: list of types observed (may be empty)
-   - e.g., ["vagueness", "topic_abort", "minimizing", "humor", "silence_implied"]
+2. AVOIDANCE (0.0–1.0): 
+   - 0.0 = direct/authentic, 1.0 = heavy deflection.
+   - Look for: intellectualization, humor, vagueness, topic-shifting, minimizing.
 
-4. TEXT_VALENCE: 0.0–1.0 — emotional polarity of the utterance content.
-   - 0.0 = very negative (sad, angry, devastated, hopeless)
-   - 0.5 = neutral / mixed
-   - 1.0 = very positive (happy, grateful, hopeful)
+3. AVOIDANCE_TYPES: Technical names for the avoidance (e.g., ["minimizing", "rationalization", "humorous_deflection"]).
 
-5. TEXT_AROUSAL: 0.0–1.0 — energy/activation level of the utterance content.
-   - 0.0 = calm, flat, low energy ("whatever", "I don't know")
-   - 0.5 = moderate
-   - 1.0 = excited, animated, high energy ("I can't believe it!", "I'm so angry!")
+4. TEXT_VALENCE (0.0–1.0): Polarity of the underlying sentiment.
 
-Respond ONLY with valid JSON. No prose. Example:
-{"concepts": ["work", "boss", "overwhelmed"], "avoidance": 0.3, "avoidance_types": ["minimizing"], "text_valence": 0.2, "text_arousal": 0.7}
+5. TEXT_AROUSAL (0.0–1.0): Psychological activation/energy level.
+
+6. INSIGHT: A single concise sentence (max 15 words) explaining the psychological "move" the person is making in this utterance.
+
+Respond ONLY with valid JSON. No prose.
+Example:
+{
+  "concepts": ["Externalized Responsibility", "Passive-Aggressive Posturing"],
+  "avoidance": 0.7,
+  "avoidance_types": ["rationalization"],
+  "text_valence": 0.3,
+  "text_arousal": 0.6,
+  "insight": "Deflecting guilt by attributing responsibility to external circumstances."
+}
 """
 
 
@@ -72,6 +80,10 @@ class LLMExtractor:
             self.client = None
             self.model = model
             return
+
+        # Tracking metrics
+        self.total_calls = 0
+        self.failed_calls = 0
 
         self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.model = model
@@ -104,15 +116,20 @@ class LLMExtractor:
         if context:
             user_prompt = f"Previous context: {context}\n\nUtterance: {text}"
 
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
-        )
+        self.total_calls += 1
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            )
+        except Exception as e:
+            self.failed_calls += 1
+            raise e
 
         content = resp.choices[0].message.content or "{}"
         try:
@@ -127,6 +144,7 @@ class LLMExtractor:
             "avoidance_types": data.get("avoidance_types", []),
             "text_valence": float(data.get("text_valence", 0.5)),
             "text_arousal": float(data.get("text_arousal", 0.5)),
+            "insight": data.get("insight", "")
         }
 
 

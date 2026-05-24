@@ -10,6 +10,7 @@ from .whisper_transcriber import WhisperTranscriber
 from .vocal_analyzer import VocalAnalyzer
 from .llm_extractor import LLMExtractor
 from .graph_engine import PatientGraph
+from .diarizer import Diarizer
 
 
 class SessionProcessor:
@@ -27,16 +28,22 @@ class SessionProcessor:
         whisper_model: str = "base",
         baseline_utterances: int = 5,
         llm_model: str = "grok-3",
+        hf_token: Optional[str] = None,
+        subject_speaker: str = "SPEAKER_00",  # The main speaker whose character graph we build
     ):
         """
         whisper_model: tiny/base/small/medium/large
         baseline_utterances: how many early utterances for vocal baseline
         llm_model: model name for OpenAI-compatible API
+        hf_token: Hugging Face token for diarization
+        subject_speaker: keep only this speaker's concepts in the main graph
         """
         self.whisper = WhisperTranscriber(model_name=whisper_model)
         self.vocal = VocalAnalyzer(baseline_utterances=baseline_utterances)
         self.llm = LLMExtractor(model=llm_model)
+        self.diarizer = Diarizer(hf_token=hf_token)
         self.graph = PatientGraph()
+        self.subject_speaker = subject_speaker
 
         # Preload lazy resources (ConceptMerger embedding model) to avoid
         # latency spikes during first graph updates.
@@ -66,48 +73,84 @@ class SessionProcessor:
         if not utterances:
             return self.graph
 
+        # 1a. Diarize and assign speakers
+        print(f"  ... identifying speakers")
+        dia_segments = self.diarizer.diarize(audio_path)
+        utterances = self.diarizer.assign_speakers(utterances, dia_segments)
+
         # 2. Vocal analysis (baseline + per-utterance vocal_salience)
         vocal_results: List[Dict[str, Any]] = self.vocal.analyze(audio_path, utterances)
 
         # 3. Per-utterance: LLM extract → feed to graph
         prev_text: Optional[str] = None
 
+        insights: List[str] = []
+        total_utts = len(utterances)
+
         for i, utt in enumerate(utterances):
+            print(f"  [{i+1}/{total_utts}] Analyzing: {utt['text'][:50]}...")
             text = utt["text"]
+            curr_speaker = utt.get("speaker", "unknown")
+            
             # vocal_salience for this utterance (match by index; same order)
             try:
                 vs = float(vocal_results[i].get("vocal_salience", 0.5))
             except Exception:
                 vs = 0.5
 
-            # LLM extraction (text-only: concepts, avoidance, valence, arousal)
+            # LLM extraction
+            llm_text = f"Speaker: {curr_speaker}\nText: {text}"
             try:
-                signals = self.llm.extract(text, context=prev_text)
+                signals = self.llm.extract(llm_text, context=prev_text)
             except Exception:
-                signals = {"concepts": [], "avoidance": 0.0, "text_valence": 0.5, "text_arousal": 0.5}
+                signals = {"concepts": [], "avoidance": 0.0, "text_valence": 0.5, "text_arousal": 0.5, "insight": ""}
+            
             concepts: List[str] = signals.get("concepts", [])
             avoidance: float = float(signals.get("avoidance", 0.0))
             text_arousal: float = float(signals.get("text_arousal", 0.5))
-            # Dissonance = |text arousal − voice arousal| (post-hoc merge, separation of concerns)
-            dissonance: float = abs(text_arousal - vs)
+            insight: str = signals.get("insight", "")
+            
+            if insight and curr_speaker == self.subject_speaker:
+                insights.append(insight)
 
-            # 3a. Co-activation for all concept pairs in this utterance
-            for a in range(len(concepts)):
-                for b in range(a + 1, len(concepts)):
-                    self.graph.record_coactivation(concepts[a], concepts[b], vs)
-
-            # 3b. Avoidance → silence edges
-            if avoidance >= self.graph.AVOIDANCE_THRESHOLD:
-                for c in concepts:
-                    self.graph.record_avoidance(c, avoidance)
-
-            # 3c. Dissonance → stored on edges between concepts
-            if dissonance > 0 and len(concepts) >= 2:
+            # Metrics
+            diff = abs(text_arousal - vs)
+            dissonance = diff
+            intensity = (text_arousal + vs) / 2
+            consonance = (1.0 - diff) * intensity
+            
+            if curr_speaker == self.subject_speaker:
+                # 3a. Co-activation
                 for a in range(len(concepts)):
                     for b in range(a + 1, len(concepts)):
+                        self.graph.record_coactivation(concepts[a], concepts[b], vs)
                         self.graph.record_dissonance(concepts[a], concepts[b], dissonance)
+                        self.graph.record_consonance(concepts[a], concepts[b], consonance, intensity)
 
+                # 3b. Avoidance
+                if avoidance >= self.graph.AVOIDANCE_THRESHOLD:
+                    for c in concepts:
+                        self.graph.record_avoidance(c, avoidance)
+            
             prev_text = text
+
+        # --- PROCESS SUMMARY & SYNTHESIS ---
+        print("\n" + "="*60)
+        print("🔍 OUSIA PSYCHOLOGICAL SYNTHESIS REPORT")
+        print("="*60)
+        print(f"  🔊 Utterances: {len(utterances)} | 👤 Speakers: {len(set(u.get('speaker', 'unknown') for u in utterances))}")
+        print(f"  🤖 LLM Calls:  {self.llm.total_calls} | 🧠 Subject: {self.subject_speaker}")
+        print("-" * 60)
+        
+        # Display top 5 insights as a journey
+        if insights:
+            print("  📜 Clinical Journey / Insights:")
+            for j, ins in enumerate(insights[:8]): # Show a few key ones
+                print(f"    {j+1}. {ins}")
+        
+        print("-" * 60)
+        self.graph.summary()
+        print("="*60 + "\n")
 
         # 4. End of session: apply use-dependent decay
         self.graph.apply_session_decay()
